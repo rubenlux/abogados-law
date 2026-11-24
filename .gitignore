@@ -1,0 +1,69 @@
+# ==============================================================================
+# ABOGADOS VIRTUAL - ROOT .GITIGNORE
+# Baseline: ABOGADOS-LAW-GIT-BASELINE-CLEANUP-001
+# ==============================================================================
+
+# Environment variables & secrets (CRITICAL)
+.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
+
+# Dependencies
+node_modules/
+*/node_modules/
+.pnp
+.pnp.js
+
+# Build and compilation outputs
+dist/
+*/dist/
+build/
+*/build/
+out/
+*/out/
+dist-ssr/
+*.tsbuildinfo
+.vite/
+*/.vite/
+
+# Testing & Coverage
+coverage/
+*/coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Crawler / Scraper debug & temporary artifacts
+backend/csjn-results.json
+backend/debug-*.png
+backend/debug-*.json
+debug-*.png
+debug-*.json
+
+# Database backups, dumps & runtime artifacts
+backups/
+*.dump
+*.sql.gz
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Temporary & cache files
+*.tmp
+*.temp
+.cache/
+*/.cache/

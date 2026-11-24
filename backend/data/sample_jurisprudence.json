@@ -1,0 +1,52 @@
+[
+    {
+        "tribunal": "CSJN",
+        "nroExpediente": "CSJ 456/2023",
+        "fecha": "2024-03-15",
+        "jurisdiccion": "NACION",
+        "fuero": "CIVIL",
+        "tema": [
+            "Accidentes de Tránsito",
+            "Responsabilidad Subjectiva"
+        ],
+        "caratula": "García, Juan c/ Transporte Oeste s/ Daños y Perjuicios",
+        "resumen": "La Corte Suprema reafirma el principio de reparación integral en accidentes viales.",
+        "textoCompleto": "VISTOS: ... CONSIDERANDO: Que el artículo 1109 del Código Civil establece la obligación de reparar el daño causado... Que la indemnización debe cubrir no solo el daño emergente sino también el lucro cesante y el daño moral...",
+        "precedencia": "OBLIGATORIO",
+        "vigencia": "VIGENTE",
+        "fuenteOficialUrl": "https://csjn.gov.ar/fallos/12345"
+    },
+    {
+        "tribunal": "CAMARA_NACIONAL",
+        "sala": "Sala F",
+        "nroExpediente": "CIV 7890/2022",
+        "fecha": "2023-11-20",
+        "jurisdiccion": "NACION",
+        "fuero": "CIVIL",
+        "tema": [
+            "Daño Moral",
+            "Cuantificación"
+        ],
+        "caratula": "López, Maria c/ Seguros S.A. s/ Cumplimiento de Contrato",
+        "resumen": "Criterio para cuantificar el daño moral en incumplimientos contractuales.",
+        "textoCompleto": "La Cámara establece que el daño moral en materia contractual requiere prueba inequívoca de la afectación espiritual...",
+        "precedencia": "PERSUASIVO",
+        "vigencia": "VIGENTE"
+    },
+    {
+        "tribunal": "CSJN",
+        "nroExpediente": "CSJ 111/2020",
+        "fecha": "2020-05-01",
+        "jurisdiccion": "NACION",
+        "fuero": "LABORAL",
+        "tema": [
+            "Despido",
+            "Indemnización Agravada"
+        ],
+        "caratula": "Perez c/ Empresa X s/ Despido",
+        "resumen": "Fallo histórico sobre multas laborales.",
+        "textoCompleto": "En este fallo plenario se discute la aplicación de la Ley 24.013...",
+        "precedencia": "PLENARIO",
+        "vigencia": "MODIFICADO"
+    }
+]

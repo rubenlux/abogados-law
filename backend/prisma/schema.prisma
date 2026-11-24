@@ -1,0 +1,822 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  // extensions = [vector]
+}
+
+// --------------------------------------
+// 1. MULTI-TENANCY & AUTH
+// --------------------------------------
+
+enum OrganizationPlan {
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+model Organization {
+  id          String           @id @default(uuid())
+  name        String
+  cuit        String?
+  plan        OrganizationPlan @default(STARTER)
+  settings    Json?            // Visual settings, notifications
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  users       User[]
+  expedientes Expediente[]
+  clients     Client[]
+  templates   LegalTemplate[]
+  judicialAccounts JudicialAccount[]
+  usage       TenantUsage?
+}
+
+enum UserRole {
+  ADMIN
+  PARTNER      // Socio
+  ASSOCIATE    // Asociado
+  PARALEGAL
+  CLIENT       // Vista limitada
+}
+
+model User {
+  id             String       @id @default(uuid())
+  email          String       @unique
+  passwordHash   String
+  fullName       String
+  role           UserRole     @default(ASSOCIATE)
+  permissions    Json?        // Granular overrides
+  
+  refreshTokenHash String?
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  
+  auditLogs      AuditLog[]
+  assignedCases  Expediente[] // Case ownership/assignment
+  aiChatSessions AIChatSession[]
+  drafts         LegalDraft[]
+
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([organizationId])
+}
+
+// --------------------------------------
+// 2. CORE LEGAL ENTITIES
+// --------------------------------------
+
+enum ExpedienteEstado {
+  INICIO
+  PRUEBA
+  ALEGATOS
+  SENTENCIA
+  APELACION
+  ARCHIVADO
+}
+
+model Expediente {
+  id               String           @id @default(uuid())
+  caratula         String
+  numeroExpediente String
+  juzgado          String
+  jurisdiccion     String
+  estado           ExpedienteEstado @default(INICIO)
+  tags             String[]
+  
+  organizationId   String
+  organization     Organization     @relation(fields: [organizationId], references: [id])
+  
+  users            User[]           // Abogados asignados
+  documentos       Documento[]
+  eventos          EventoAgenda[]
+  drafts           LegalDraft[]
+  riskAnalyses     LegalRiskAnalysis[]
+
+  
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([organizationId])
+}
+
+enum DocumentoTipo {
+  ESCRITO
+  CEDULA
+  SENTENCIA
+  PRUEBA_DOCUMENTAL
+  OTRO
+}
+
+model Documento {
+  id             String        @id @default(uuid())
+  expedienteId   String
+  expediente     Expediente    @relation(fields: [expedienteId], references: [id])
+  
+  tipo           DocumentoTipo
+  storagePath    String
+  fileName       String
+  fileSize       Int
+  mimeType       String
+  
+  // Security & Forensics
+  hashSha256     String        // For integrity check
+  isLocked       Boolean       @default(false) // WORM support
+  lockExpiresAt  DateTime?
+  legalHold      Boolean       @default(false) // Litigation Hold (indefinite)
+  legalHoldReason String?
+  
+  
+  // Content
+  ocrContent     String?       @db.Text
+  
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  
+  versions       DocumentVersion[]
+}
+
+model Client {
+  id             String       @id @default(uuid())
+  firstName      String
+  lastName       String
+  email          String?
+  phone          String?
+  
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+// --------------------------------------
+// 3. AGENDA & DEADLINES
+// --------------------------------------
+
+enum PlazoTipo {
+  FATAL
+  ORDINARIO
+  MERO_TRAMITE
+}
+
+enum EventoEstado {
+  PENDIENTE
+  COMPLETADO
+  VENCIDO
+}
+
+model EventoAgenda {
+  id               String       @id @default(uuid())
+  expedienteId     String
+  expediente       Expediente   @relation(fields: [expedienteId], references: [id])
+  
+  titulo           String
+  descripcion      String?
+  fechaVencimiento DateTime
+  tipoPlazo        PlazoTipo
+  estado           EventoEstado @default(PENDIENTE)
+  
+  isCritical       Boolean      @default(false)
+  alertConfig      Json?        // { "t_minus_7": true, "t_minus_24": true }
+  
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+}
+
+// --------------------------------------
+// 3b. JUDICIAL CALENDAR ENGINE
+// --------------------------------------
+
+model CalendarioJudicial {
+  id               String   @id @default(uuid())
+  jurisdiccion     String   // CABA, PBA, NACION
+  fecha            DateTime
+  descripcion      String   // "Feria Judicial", "Día del Trabajador Judicial"
+  esFeriado        Boolean  @default(true)
+  esInhabil        Boolean  @default(true) // Puede ser hábil para algunas cosas
+  afectaPlazos     Boolean  @default(true)
+  
+  createdBy        String?
+  createdAt        DateTime @default(now())
+  
+  @@unique([jurisdiccion, fecha])
+}
+
+// --------------------------------------
+// 4. LEGAL KNOWLEDGE BASE (RAG)
+// --------------------------------------
+
+enum LegalNormJurisdiccion {
+  NACION
+  CABA
+  PBA
+  CBA
+  SFE
+}
+
+enum LegalNormFuero {
+  CIVIL
+  COMERCIAL
+  PENAL
+  LABORAL
+  FAMILIA
+  CONTENCIOSO_ADMINISTRATIVO
+}
+
+enum LegalNormEstado {
+  VIGENTE
+  DEROGADA
+  MODIFICADA
+  ANULADA
+}
+
+model LegalNorm {
+  id                String                @id @default(uuid())
+  
+  // Clasificación
+  jurisdiccion      LegalNormJurisdiccion
+  fuero             LegalNormFuero
+  tipoNorma         String                // LEY, DECRETO, CODIGO, RESOLUCION, ACORDADA
+  
+  // Identificación
+  nombre            String                // "Código Civil y Comercial"
+  numeroNorma       String?               // "Ley 26.994"
+  articulo          String                // "1109"
+  inciso            String?
+  apartado          String?               // Para sub-divisiones
+  
+  // Contenido & Vector
+  textoCompleto     String                @db.Text
+  textoNormalizado  String?               @db.Text  // Sin formato, limpio para embeddings
+  embedding         Unsupported("vector(1536)")? // pgvector type
+  
+  // Versionado (Strict Mode)
+  versionNorma      Int                   @default(1)
+  fechaVigencia     DateTime
+  fechaDerogacion   DateTime?
+  estado            LegalNormEstado       @default(VIGENTE)
+  normaModificadoraId String?
+  
+  // Metadatos
+  ambitoAplicacion  String?               // "Nacional", "Local", "Federal"
+  estadoActual      String?               // Descripción textual del estado
+  fuenteOficialUrl  String?
+  checksumTexto     String?               // SHA256 del texto para integridad
+  
+  // Ingestion Metadata (NEW)
+  sourceType        String?               // "PDF", "HTML", "API", "MANUAL"
+  sourceUrl         String?               // URL original del documento
+  sourceFileHash    String?               // Hash del archivo fuente
+  parsedAt          DateTime?             // Fecha de parsing
+  parsedBy          String?               // Script/usuario que lo parseó
+  parsingVersion    String?               // Versión del parser usado
+  rawContent        String?               @db.Text // Contenido crudo antes de normalizar
+  
+  // Conflict Detection (NEW)
+  conflictsWith     String[]              // IDs de normas en conflicto
+  supersedes        String[]              // IDs de normas que esta reemplaza
+  supersededBy      String?               // ID de norma que reemplaza a esta
+  
+  // Search & Classification
+  keywords          String[]
+  conceptosJuridicos String[]
+  temas             String[]              // "responsabilidad civil", "contratos"
+  
+  // Audit
+  ingestedBy        String?               // User ID que ingresó
+  verifiedBy        String?               // User ID que verificó
+  verifiedAt        DateTime?
+  
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  @@index([jurisdiccion, fuero, estado])
+  @@index([tipoNorma, numeroNorma])
+  @@index([checksumTexto])
+  @@unique([jurisdiccion, numeroNorma, articulo, versionNorma])
+}
+
+// --------------------------------------
+// 5. SECURITY & FORENSICS
+// --------------------------------------
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  
+  action      String   // LOGIN, READ_DOC, DELETE_EXP, EXPORT
+  entityId    String?
+  entityTable String?
+  
+  oldValues   Json?
+  newValues   Json?
+  
+  ipAddress   String?
+  userAgent   String?
+  
+  // Forensics (Hash Chain)
+  prevHash    String?  // Hash of the previous log entry
+  currentHash String?  // SHA256(prevHash + content)
+  signature   String?  // Optional external signature
+  
+  timestamp   DateTime @default(now())
+
+  @@index([userId])
+
+  @@index([timestamp])
+}
+
+// --------------------------------------
+// 6. AI & USAGE TRACKING
+// --------------------------------------
+
+model AIInteraction {
+  id             String   @id @default(uuid())
+  organizationId String
+  userId         String?
+  
+  endpoint       String   // /ai/ask, /ai/analyze
+  promptTokens   Int
+  completionTokens Int
+  costUsd        Decimal  @db.Decimal(10, 6)
+  
+  promptHash     String?  // For caching (simple)
+  response       String   @db.Text
+  
+  timestamp      DateTime @default(now())
+  
+  @@index([organizationId])
+}
+
+// --------------------------------------
+// 7. JURISPRUDENCE ENGINE (RAG)
+// --------------------------------------
+
+enum JurisprudenceTribunal {
+  CSJN              // Corte Suprema de Justicia de la Nación
+  CAMARA_FEDERAL    // Cámaras Federales de Apelaciones
+  CAMARA_NACIONAL   // Cámaras Nacionales de Apelaciones
+  CAMARA_PROVINCIAL // Cámaras Provinciales
+  TRIBUNAL_SUPERIOR // Tribunales Superiores Provinciales
+  JUZGADO_FEDERAL   // Juzgados Federales de Primera Instancia
+  JUZGADO_NACIONAL  // Juzgados Nacionales
+  JUZGADO_PROVINCIAL // Juzgados Provinciales
+}
+
+enum JurisprudencePrecedencia {
+  PLENARIO          // Fallo plenario (máxima vinculación)
+  OBLIGATORIO       // Jurisprudencia obligatoria
+  PERSUASIVO        // Valor persuasivo
+  REFERENCIAL       // Solo referencial
+}
+
+enum JurisprudenceVigencia {
+  VIGENTE           // Vigente y aplicable
+  MODIFICADO        // Modificado por fallo posterior
+  SUPERADO          // Superado por nueva jurisprudencia
+  DEROGADO          // Derogado o sin efecto
+}
+
+model Jurisprudence {
+  id                String                    @id @default(uuid())
+  
+  // Identificación del Fallo
+  tribunal          JurisprudenceTribunal
+  sala              String?                   // "Sala I", "Sala Civil", etc.
+  nroExpediente     String                    // "CSJ 123/2023"
+  fecha             DateTime                  // Fecha del fallo
+  
+  // Clasificación
+  jurisdiccion      String                    // "NACIONAL", "CABA", etc.
+  fuero             LegalNormFuero            // Reutilizamos el enum
+  tema              String[]                  // ["Responsabilidad Civil", "Daños"]
+  
+  // Contenido
+  resumen           String                    @db.Text  // Sumario oficial
+  textoCompleto     String                    @db.Text  // Texto íntegro del fallo
+  
+  // Jerarquía y Vinculación
+  precedencia       JurisprudencePrecedencia  @default(REFERENCIAL)
+  vigencia          JurisprudenceVigencia     @default(VIGENTE)
+  
+  // Metadatos
+  fuenteOficialUrl  String?                   // URL del fallo en fuente oficial
+  caratula          String?                   // "Pérez c/ González s/ Daños"
+  magistrados       String[]                  // Jueces que firmaron
+  votos             Json?                     // Estructura de votos (mayoría, disidencias)
+  citationCount     Int                       @default(0) // Cache de cantidad de citas recibidas
+  
+  // Vector Embedding (Full Text)
+  embedding         Unsupported("vector(1536)")?
+  
+  // Ingestion Metadata
+  sourceType        String?                   // "CSJN_API", "SCRAPING", "MANUAL"
+  sourceUrl         String?
+  sourceFileHash    String?
+  parsedAt          DateTime?
+  parsedBy          String?
+  parsingVersion    String?
+  
+  // Relaciones
+  chunks            JurisprudenceChunk[]      // Chunking por considerandos
+  citedBy           JurisprudenceCitation[]   @relation("CitingCase")
+  cites             JurisprudenceCitation[]   @relation("CitedCase")
+  
+  // Auditoría
+  ingestedBy        String?
+  verifiedBy        String?
+  verifiedAt        DateTime?
+  
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  
+  @@unique([tribunal, nroExpediente, fecha])
+  @@index([tribunal, fecha])
+  @@index([jurisdiccion, fuero])
+  @@index([precedencia, vigencia])
+  @@index([tema])
+}
+
+// Chunking: Cada considerando o sección doctrinaria como chunk independiente
+model JurisprudenceChunk {
+  id                String                    @id @default(uuid())
+  
+  jurisprudenceId   String
+  jurisprudence     Jurisprudence             @relation(fields: [jurisprudenceId], references: [id], onDelete: Cascade)
+  
+  // Chunk Info
+  chunkType         String                    // "CONSIDERANDO", "DOCTRINA", "RESOLUTIVO"
+  chunkNumber       Int                       // Número de considerando (1, 2, 3...)
+  texto             String                    @db.Text
+  
+  // Vector Embedding (Chunk-level)
+  embedding         Unsupported("vector(1536)")?
+  
+  // Metadata
+  keywords          String[]                  // Keywords extraídas del chunk
+  conceptosJuridicos String[]                 // Conceptos jurídicos identificados
+  
+  createdAt         DateTime                  @default(now())
+  
+  @@index([jurisprudenceId])
+  @@index([chunkType])
+}
+
+// Citaciones entre fallos (grafo de jurisprudencia)
+model JurisprudenceCitation {
+  id                String                    @id @default(uuid())
+  
+  citingCaseId      String
+  citingCase        Jurisprudence             @relation("CitingCase", fields: [citingCaseId], references: [id], onDelete: Cascade)
+  
+  citedCaseId       String
+  citedCase         Jurisprudence             @relation("CitedCase", fields: [citedCaseId], references: [id], onDelete: Cascade)
+  
+  citationType      String                    // "SIGUE", "DISTINGUE", "CRITICA"
+  context           String?                   @db.Text // Contexto de la cita
+  
+  createdAt         DateTime                  @default(now())
+  
+  @@unique([citingCaseId, citedCaseId])
+  @@index([citedCaseId])
+}
+
+// --------------------------------------
+// 8. AI CHAT CONTEXTUAL (EXPEDIENTES)
+// --------------------------------------
+
+model AIChatSession {
+  id            String          @id @default(uuid())
+  expedienteId  String          
+  userId        String
+  user          User            @relation(fields: [userId], references: [id])
+  
+  title         String?         
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  
+  // Memoria a largo plazo
+  summary       String?         @db.Text 
+  contextData   Json?           
+
+  messages      AIChatMessage[]
+
+  @@index([expedienteId])
+  @@index([userId])
+}
+
+model AIChatMessage {
+  id            String        @id @default(uuid())
+  sessionId     String
+  session       AIChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  role          String        // 'user', 'assistant', 'system'
+  content       String        @db.Text
+  
+  // Auditoría y Costos
+  tokensInput   Int?
+  tokensOutput  Int?
+  modelModel    String?       
+  cost          Decimal?      @db.Decimal(10, 6)
+  
+  // Prevención de Alucinaciones (Grounding)
+  citations     Json?         // Array de fuentes usadas { types: 'LEY'|'FALLO'|'DOC', id, title, fragment }
+  isVerified    Boolean       @default(false) 
+  
+  createdAt     DateTime      @default(now())
+  
+  @@index([sessionId])
+}
+
+// --------------------------------------
+// 9. LEGAL DRAFTING ENGINE
+// --------------------------------------
+
+enum DraftType {
+  DEMANDA
+  CONTESTACION
+  RECURSO
+  MERO_TRAMITE
+  OTRO
+}
+
+model LegalDraft {
+  id              String      @id @default(uuid())
+  
+  userId          String
+  user            User        @relation(fields: [userId], references: [id])
+  
+  // Optional link to an existing case
+  expedienteId    String?
+  expediente      Expediente? @relation(fields: [expedienteId], references: [id])
+  
+  draftType       DraftType
+  
+  // Inputs
+  jurisdiction    String
+  fuero           String
+  facts           String      @db.Text
+  dataContext     Json?       // Extra data provided about the case
+  
+  // Outputs (Structured)
+  header          String?     @db.Text
+  bodyFacts       String?     @db.Text
+  bodyLaw         String?     @db.Text
+  petitorio       String?     @db.Text
+  fullText        String?     @db.Text // Full assembled text
+  
+  isFinal         Boolean     @default(false)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@index([userId])
+  @@index([expedienteId])
+}
+
+// --------------------------------------
+// 10. LEGAL RISK ENGINE
+// --------------------------------------
+
+enum RiskLevel {
+  BAJO
+  MEDIO
+  ALTO
+  CRITICO
+}
+
+model LegalRiskAnalysis {
+  id              String      @id @default(uuid())
+  expedienteId    String
+  expediente      Expediente  @relation(fields: [expedienteId], references: [id])
+  
+  // Overall Scoring
+  score           Int         // 0-100 (Higher is riskier for the client's position/goal)
+  riskLevel       RiskLevel
+  
+  // Factor Breakdown (0-100)
+  jurisprudenceScore Int?     // How much jurisprudence is against us?
+  normativeScore     Int?     // Are laws outdated or unstable?
+  complexityScore    Int?     // Is the case inherently complex?
+  
+  // Detailed Analysis
+  factors         Json        // { "contradictory_jurisprudence": true, "old_law": false, ... }
+  explanation     String      @db.Text
+  
+  // Audit
+  userId          String?     // Who requested it
+  analyzedAt      DateTime    @default(now())
+  
+  @@index([expedienteId])
+}
+
+// --------------------------------------
+// 11. ADVANCED DOCUMENT MANAGEMENT
+// --------------------------------------
+
+model DocumentVersion {
+  id             String     @id @default(uuid())
+  documentId     String
+  document       Documento  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  versionNumber  Int
+  storagePath    String
+  fileName       String
+  mimeType       String
+  fileSize       Int
+  
+  hashSha256     String
+  ocrContent     String?    @db.Text
+  
+  changesSummary String?    // Diff summary vs previous version
+  
+  uploadedBy     String?    // UserId
+  createdAt      DateTime   @default(now())
+  
+  @@index([documentId])
+}
+
+// --------------------------------------
+// 12. DOCUMENT AUTOMATION (TEMPLATES)
+// --------------------------------------
+
+model LegalTemplate {
+  id             String     @id @default(uuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  
+  name           String
+  description    String?
+  content        String     @db.Text // HTML or Markdown with {{variables}}
+  variables      Json       // ["client_name", "date", "court"]
+  
+  category       String?    // "Demanda", "Carta Documento"
+  isActive       Boolean    @default(true)
+  
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  
+  @@index([organizationId])
+}
+
+// --------------------------------------
+// 13. JUDICIAL INTEGRATION & NOTIFICATIONS
+// --------------------------------------
+
+model JudicialAccount {
+  id             String     @id @default(uuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  
+  jurisdiction   String     // "PJN", "PBA", "CSJN"
+  username       String
+  encryptedPassword String  // Encrypted at rest
+  
+  lastSyncAt     DateTime?
+  status         String     // "ACTIVE", "ERROR", "NEEDS_AUTH"
+  
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  
+  @@index([organizationId])
+}
+
+// --------------------------------------
+// 14. TENANT USAGE & LIMITS
+// --------------------------------------
+
+model SubscriptionPlan {
+  id             String     @id @default(uuid())
+  code           String     @unique // "STARTER", "PRO"
+  name           String
+  
+  maxUsers       Int
+  maxStorageGb   Int
+  maxCases       Int
+  maxAiTokens    Int        // Monthly limit
+  
+  features       Json       // ["api_access", "white_label"]
+  
+  createdAt      DateTime   @default(now())
+}
+
+model TenantUsage {
+  id             String     @id @default(uuid())
+  organizationId String     @unique
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  
+  currentUsers     Int      @default(0)
+  currentStorageMb Float    @default(0)
+  currentCases     Int      @default(0)
+  
+  aiTokensUsed     Int      @default(0) // Reset monthly
+  periodStart      DateTime @default(now())
+  periodEnd        DateTime
+  
+  isValid          Boolean  @default(true)
+}
+
+// --------------------------------------
+// 15. TELEMETRY & LEGAL PIXEL (Big Data)
+// --------------------------------------
+
+enum ActorType {
+  USER
+  EMPLOYEE
+  CLIENT
+  SYSTEM
+  BOT
+}
+
+enum EventCategory {
+  SECURITY
+  LEGAL
+  IA
+  FINANCIAL
+  HR
+  SYSTEM
+  CLIENT
+}
+
+enum EventSeverity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model EventLog {
+  id             String      @id @default(uuid())
+  correlationId  String?     // UUID grouping ops
+  requestId      String?
+  parentEventId  String?
+  
+  category       EventCategory @default(SYSTEM)
+  severity       EventSeverity @default(INFO)
+  
+  timestamp      DateTime    @default(now())
+  
+  actorType      ActorType
+  actorId        String?
+  
+  eventType      String
+  entityType     String?
+  entityId       String?
+  
+  payload        Json?
+  
+  ipAddress      String?
+  userAgent      String?
+  deviceFingerprint String?
+  sessionId      String?
+  
+  // -- FORENSIC SECURITY --
+  prevHash       String?
+  currentHash    String?     // SHA-256
+  signature      String?     // HMAC
+  
+  riskScore      Int         @default(0)
+  isAnomaly      Boolean     @default(false)
+  
+  organizationId String?
+  
+  @@index([timestamp])
+  @@index([actorId])
+  @@index([currentHash])     // Integrity check
+  @@index([organizationId])
+}
+
+// --------------------------------------
+// 16. OFFICE & EMPLOYEE METRICS
+// --------------------------------------
+
+model EmployeeMetric {
+  id             String      @id @default(uuid())
+  userId         String
+  date           DateTime    @db.Date
+  
+  activeTimeMinutes Int      @default(0)
+  ticketsResolved   Int      @default(0)
+  aiPromptsUsed     Int      @default(0)
+  documentsRead     Int      @default(0)
+  
+  productivityScore Int      @default(0) // 0-100
+  
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  
+  @@unique([userId, date])
+}
