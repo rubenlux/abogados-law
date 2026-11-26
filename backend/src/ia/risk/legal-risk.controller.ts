@@ -1,23 +1,36 @@
+import { Controller, Post, Get, Param, UseGuards, Req } from "@nestjs/common";
+import { LegalRiskService } from "./legal-risk.service";
+import { BffSessionGuard } from "../../auth/guards/bff-session.guard";
+import { CsrfGuard } from "../../auth/guards/csrf.guard";
+import { ActiveOrgContextGuard } from "../../authz/guards/active-org-context.guard";
+import { OrgPermissionGuard } from "../../authz/guards/org-permission.guard";
+import { RequireOrgPermissions } from "../../authz/decorators/require-org-permissions.decorator";
 
-import { Controller, Post, Get, Param, Body } from '@nestjs/common';
-import { LegalRiskService } from './legal-risk.service';
-
-@Controller('ai/risk-score')
+@UseGuards(
+  BffSessionGuard,
+  ActiveOrgContextGuard,
+  CsrfGuard,
+  OrgPermissionGuard,
+)
+@Controller("ai/risk-score")
 export class LegalRiskController {
-    constructor(private readonly riskService: LegalRiskService) { }
+  constructor(private readonly riskService: LegalRiskService) {}
 
-    @Post(':expedienteId')
-    async analyzeRisk(
-        @Param('expedienteId') expedienteId: string,
-        @Body('userId') userId: string // Assuming passed in body for now, replace with Auth user in prod
-    ) {
-        // Fallback for dev if userId not provided
-        const finalUserId = userId || 'system-test-user';
-        return this.riskService.analyzeRisk(expedienteId, finalUserId);
-    }
+  @Post(":expedienteId")
+  @RequireOrgPermissions("ai:use")
+  async analyzeRisk(
+    @Param("expedienteId") expedienteId: string,
+    @Req() req: any,
+  ) {
+    return this.riskService.analyzeRisk(expedienteId, req.orgContext);
+  }
 
-    @Get(':expedienteId')
-    async getRiskHistory(@Param('expedienteId') expedienteId: string) {
-        return this.riskService.getHistory(expedienteId);
-    }
+  @Get(":expedienteId")
+  @RequireOrgPermissions("ai:use")
+  async getRiskHistory(
+    @Param("expedienteId") expedienteId: string,
+    @Req() req: any,
+  ) {
+    return this.riskService.getHistory(expedienteId, req.orgContext);
+  }
 }

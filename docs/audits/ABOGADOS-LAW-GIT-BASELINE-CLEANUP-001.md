@@ -314,3 +314,4 @@ npm install
 > - **NO** se modificaron migraciones ni esquemas.
 > 
 > El repositorio se encuentra ahora en un estado seguro, atómico y reproducible, a la espera de la autorización explícita del usuario para dar paso a la siguiente fase de desarrollo y remediación técnica.
+

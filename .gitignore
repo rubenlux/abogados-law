@@ -67,3 +67,7 @@ Thumbs.db
 *.temp
 .cache/
 */.cache/
+
+# Private document storage (AUTH-08 — never commit tenant binaries)
+.private-storage/
+*/.private-storage/

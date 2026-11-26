@@ -1,59 +1,103 @@
-
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
-import { LegalTemplate } from '@prisma/client';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from "@nestjs/common";
+import { ScopedPrismaService } from "../authz/scoped-prisma.service";
+import { ActiveOrgContext } from "../authz/guards/active-org-context.guard";
+import { LEGAL_TEMPLATE_SELECT_BY_ROLE } from "../authz/permissions";
 
 @Injectable()
 export class TemplatesService {
-    constructor(private prisma: PrismaService) { }
+  constructor(private readonly scopedPrisma: ScopedPrismaService) {}
 
-    async create(data: { name: string; content: string; variables: string[]; category?: string; organizationId: string }) {
-        return this.prisma.legalTemplate.create({
-            data: {
-                name: data.name,
-                content: data.content,
-                variables: data.variables,
-                category: data.category,
-                organizationId: data.organizationId
-            }
-        });
+  async create(
+    data: {
+      name: string;
+      description?: string;
+      content: string;
+      variables: string[];
+      category?: string;
+    },
+    ctx: ActiveOrgContext,
+  ) {
+    const select = LEGAL_TEMPLATE_SELECT_BY_ROLE[ctx.orgRole];
+    if (!select) {
+      throw new ForbiddenException("Role cannot access templates");
     }
 
-    async findAll(organizationId: string) {
-        return this.prisma.legalTemplate.findMany({
-            where: { organizationId, isActive: true }
-        });
+    return this.scopedPrisma.runInOrgContext(ctx, (tx) =>
+      tx.legalTemplate.create({
+        data: {
+          name: data.name,
+          description: data.description,
+          content: data.content,
+          variables: data.variables,
+          category: data.category,
+          organizationId: ctx.organizationId,
+        },
+        select,
+      }),
+    );
+  }
+
+  async findAll(ctx: ActiveOrgContext) {
+    const select = LEGAL_TEMPLATE_SELECT_BY_ROLE[ctx.orgRole];
+    if (!select) {
+      throw new ForbiddenException("Role cannot access templates");
     }
 
-    async findOne(id: string) {
-        return this.prisma.legalTemplate.findUnique({ where: { id } });
+    return this.scopedPrisma.runInOrgContext(ctx, (tx) =>
+      tx.legalTemplate.findMany({
+        where: { organizationId: ctx.organizationId, isActive: true },
+        select,
+      }),
+    );
+  }
+
+  /**
+   * Renderiza una plantilla verificando pertenencia estricta a la organización activa.
+   */
+  async generateDocument(
+    id: string,
+    values: Record<string, string>,
+    ctx: ActiveOrgContext,
+  ) {
+    const template = await this.scopedPrisma.runInOrgContext(ctx, (tx) =>
+      tx.legalTemplate.findFirst({
+        where: { id, organizationId: ctx.organizationId },
+        select: {
+          id: true,
+          name: true,
+          content: true,
+          variables: true,
+        },
+      }),
+    );
+
+    if (!template) {
+      throw new NotFoundException("Template not found");
     }
 
-    /**
-     * Renderiza una plantilla reemplazando variables {{key}} con valores
-     */
-    async generateDocument(id: string, values: Record<string, string>) {
-        const template = await this.findOne(id);
-        if (!template) throw new NotFoundException('Template not found');
+    let content = template.content;
 
-        let content = template.content;
+    Object.keys(values).forEach((key) => {
+      const regex = new RegExp(`{{${key}}}`, "g");
+      content = content.replace(regex, values[key]);
+    });
 
-        // Reemplazo simple de variables
-        // En prod usar un motor como Handlebars
-        Object.keys(values).forEach(key => {
-            const regex = new RegExp(`{{${key}}}`, 'g');
-            content = content.replace(regex, values[key]);
-        });
+    const variablesList = Array.isArray(template.variables)
+      ? (template.variables as string[])
+      : [];
 
-        // Verificación de variables faltantes
-        const missingVars = template.variables
-            // @ts-ignore
-            .filter((v: string) => !values[v] && content.includes(`{{${v}}}`));
+    const missingVars = variablesList.filter(
+      (v: string) => !values[v] && content.includes(`{{${v}}}`),
+    );
 
-        return {
-            content,
-            missingVariables: missingVars,
-            templateName: template.name
-        };
-    }
+    return {
+      content,
+      missingVariables: missingVars,
+      templateName: template.name,
+    };
+  }
 }

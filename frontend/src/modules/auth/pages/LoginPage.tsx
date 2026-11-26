@@ -1,4 +1,3 @@
-
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -17,43 +16,74 @@ type LoginForm = z.infer<typeof loginSchema>;
 
 export const LoginPage = () => {
     const navigate = useNavigate();
-    const login = useAuthStore((state) => state.login);
+    const setSession = useAuthStore((state) => state.setSession);
     const [error, setError] = useState('');
+    const [isDemoLoading, setIsDemoLoading] = useState(false);
 
-    const { register, handleSubmit, setValue, formState: { errors, isSubmitting } } = useForm<LoginForm>({
+    const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<LoginForm>({
         resolver: zodResolver(loginSchema),
         defaultValues: {
             email: '',
-            password: ''
-        }
+            password: '',
+        },
     });
 
-    const fillDemo = () => {
-        setValue('email', 'admin@estudio.com');
-        setValue('password', 'hash123'); // Dev Backdoor
+    const handleLocalDemoLogin = async () => {
+        setError('');
+        setIsDemoLoading(true);
+        try {
+            const res = await apiClient.auth.loginLocalDemo();
+            if (res.status !== 'authenticated' || !res.user) {
+                throw new Error('No se pudo confirmar la sesión BFF de desarrollo.');
+            }
+            setSession(
+                {
+                    id: res.user.id,
+                    email: res.user.email,
+                    name: res.user.fullName,
+                    role: res.user.orgRole || 'LAWYER',
+                },
+                res.organization ?? null,
+            );
+            navigate('/', { replace: true });
+        } catch (err) {
+            const message =
+                err instanceof Error && err.message
+                    ? err.message
+                    : 'No se pudo iniciar sesión Demo. Verifique que el backend local esté activo con LOCAL_DEMO_AUTH_ENABLED=true.';
+            setError(message);
+        } finally {
+            setIsDemoLoading(false);
+        }
     };
 
     const onSubmit = async (data: LoginForm) => {
         setError('');
         try {
-            // First try real backend
-            try {
-                const res = await apiClient.auth.login(data.email, data.password);
-                login(res.user as any, res.access_token, res.refresh_token);
-                navigate('/');
-                return;
-            } catch (apiError) {
-                // If network error (backend down), fallback to demo mode for presentation
-                console.warn('Backend unavailable, falling back to demo mode');
-                if (data.email === 'admin@estudio.com' && data.password === 'hash123') {
-                    login({ id: 'demo-user', email: 'admin@estudio.com', name: 'Demo Partner', role: 'PARTNER' } as any, 'demo-token', 'demo-refresh');
-                    navigate('/');
-                    return;
-                }
-                throw apiError;
+            const res = await apiClient.auth.login(data.email, data.password);
+            if (!res?.user) {
+                throw new Error('Respuesta de autenticación inválida.');
             }
+            setSession({
+                id: res.user.id,
+                email: res.user.email,
+                name: res.user.fullName || res.user.name || res.user.email,
+                role: res.user.orgRole || res.user.role || 'LAWYER',
+            });
+            navigate('/', { replace: true });
         } catch (err) {
-            setError('Credenciales incorrectas o servidor no disponible');
+            const status = (err as Error & { status?: number })?.status;
+            if (status === 404) {
+                setError(
+                    'El inicio de sesión por contraseña local está deshabilitado por política BFF/OIDC. En desarrollo local, utilice "Ingresar como Socio (Demo)".',
+                );
+            } else {
+                setError(
+                    err instanceof Error && err.message
+                        ? err.message
+                        : 'Credenciales incorrectas o servidor no disponible',
+                );
+            }
         }
     };
 
@@ -116,7 +146,7 @@ export const LoginPage = () => {
                         type="submit"
                         className="btn btn-primary"
                         style={{ marginTop: '0.5rem', width: '100%', padding: '0.75rem', fontSize: '1rem' }}
-                        disabled={isSubmitting}
+                        disabled={isSubmitting || isDemoLoading}
                     >
                         {isSubmitting ? 'Iniciando sesión...' : <>Ingresar <ArrowRight size={18} /></>}
                     </button>
@@ -124,10 +154,11 @@ export const LoginPage = () => {
                     <button
                         type="button"
                         className="btn btn-outline"
-                        onClick={fillDemo}
+                        onClick={handleLocalDemoLogin}
+                        disabled={isSubmitting || isDemoLoading}
                         style={{ marginTop: '0.5rem', width: '100%' }}
                     >
-                        Ingresar como Socio (Demo)
+                        {isDemoLoading ? 'Iniciando sesión Demo...' : 'Ingresar como Socio (Demo)'}
                     </button>
                 </form>
 

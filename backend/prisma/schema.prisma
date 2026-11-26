@@ -22,21 +22,81 @@ enum OrganizationPlan {
   ENTERPRISE
 }
 
-model Organization {
-  id          String           @id @default(uuid())
-  name        String
-  cuit        String?
-  plan        OrganizationPlan @default(STARTER)
-  settings    Json?            // Visual settings, notifications
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
 
-  users       User[]
-  expedientes Expediente[]
-  clients     Client[]
-  templates   LegalTemplate[]
-  judicialAccounts JudicialAccount[]
-  usage       TenantUsage?
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  REVOKED
+}
+
+enum OrganizationRole {
+  ORG_OWNER
+  ORG_ADMIN
+  LAWYER
+  ASSISTANT
+  STAFF
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+model Organization {
+  id          String             @id @default(uuid())
+  name        String             // Nombre legal o denominación
+  tradeName   String?            // Nombre comercial
+  cuit        String?            // Identificador fiscal
+  status      OrganizationStatus @default(ACTIVE)
+  plan        OrganizationPlan   @default(STARTER)
+  settings    Json?              // Visual settings, notifications
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  users             User[]
+  memberships       OrganizationMembership[]
+  invitations       OrganizationInvitation[]
+  activeSessions    UserSession[]            @relation("ActiveOrgSessions")
+  auditLogs         AuditLog[]
+  expedientes       Expediente[]
+  expedientesPartes ExpedienteParte[]
+  clients           Client[]
+  documentos        Documento[]
+  documentVersions  DocumentVersion[]
+  documents         Document[]
+  documentFileVersions DocumentFileVersion[]
+  legalWritings     LegalWriting[]
+  legalDraftVersions LegalDraftVersion[]
+  legalDraftTemplates LegalDraftTemplate[]
+  legalDraftReviews LegalDraftReview[]
+  legalDraftExports LegalDraftExport[]
+  legalAiConversations LegalAiConversation[]
+  legalAiMessages   LegalAiMessage[]
+  legalAiAnalyses   LegalAiAnalysis[]
+  eventosAgenda     EventoAgenda[]
+  movimientosProcesales MovimientoProcesal[]
+  agendaEvents      AgendaEvent[]
+  vencimientos      Vencimiento[]
+  templates         LegalTemplate[]
+  judicialAccounts  JudicialAccount[]
+  usage             TenantUsage?
+  aiInteractions    AIInteraction[]
+  aiChatSessions    AIChatSession[]
+  aiChatMessages    AIChatMessage[]
+  legalDrafts       LegalDraft[]
+  legalRiskAnalyses LegalRiskAnalysis[]
+  eventLogs         EventLog[]
+  employeeMetrics   EmployeeMetric[]
+
+  @@index([status])
 }
 
 enum UserRole {
@@ -60,8 +120,35 @@ model User {
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id])
   
+  identities          UserIdentity[]
+  sessions            UserSession[]
+  memberships         OrganizationMembership[]
+  sentInvitations     OrganizationInvitation[] @relation("InvitedByUser")
+  targetedInvitations OrganizationInvitation[] @relation("TargetInvitedUser")
+
   auditLogs      AuditLog[]
   assignedCases  Expediente[] // Case ownership/assignment
+  responsableDeExpedientes Expediente[] @relation("ExpedienteResponsable")
+  movimientosRegistrados   MovimientoProcesal[] @relation("MovimientoRegistradoPor")
+  movimientosAnulados      MovimientoProcesal[] @relation("MovimientoAnuladoPor")
+  agendaEventsResponsable  AgendaEvent[]        @relation("AgendaEventResponsable")
+  agendaEventsCreados      AgendaEvent[]        @relation("AgendaEventCreador")
+  vencimientosResponsable  Vencimiento[]        @relation("VencimientoResponsable")
+  vencimientosCreados      Vencimiento[]        @relation("VencimientoCreador")
+  vencimientosCumplidos    Vencimiento[]        @relation("VencimientoCumplidoPor")
+  documentsCreated         Document[]           @relation("DocumentCreatedBy")
+  documentsArchived        Document[]           @relation("DocumentArchivedBy")
+  documentVersionsUploaded DocumentFileVersion[] @relation("DocumentVersionUploadedBy")
+  legalWritingsCreated     LegalWriting[]       @relation("LegalWritingCreatedBy")
+  legalWritingsArchived    LegalWriting[]       @relation("LegalWritingArchivedBy")
+  legalDraftVersionsCreated LegalDraftVersion[] @relation("LegalDraftVersionCreatedBy")
+  legalDraftTemplatesCreated LegalDraftTemplate[] @relation("LegalDraftTemplateCreatedBy")
+  legalDraftTemplatesArchived LegalDraftTemplate[] @relation("LegalDraftTemplateArchivedBy")
+  legalDraftReviewsAssigned LegalDraftReview[]  @relation("LegalDraftReviewer")
+  legalDraftReviewsRequested LegalDraftReview[] @relation("LegalDraftReviewRequestedBy")
+  legalDraftExportsGenerated LegalDraftExport[] @relation("LegalDraftExportGeneratedBy")
+  legalAiConversations       LegalAiConversation[]
+  legalAiAnalyses            LegalAiAnalysis[]
   aiChatSessions AIChatSession[]
   drafts         LegalDraft[]
 
@@ -72,17 +159,125 @@ model User {
   @@index([organizationId])
 }
 
+model UserIdentity {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  issuer       String    // e.g. "https://abogados-auth.us.auth0.com/"
+  subject      String    // e.g. "auth0|64f123abc456..."
+  provider     String    @default("auth0") // "auth0", "google-oauth2"
+  authEmail    String?
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+
+  @@unique([issuer, subject])
+  @@index([userId])
+}
+
+model UserSession {
+  id                   String        @id @default(uuid())
+  userId               String
+  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeOrganizationId String?       // Organización activa resuelta y validada en backend
+  activeOrganization   Organization? @relation("ActiveOrgSessions", fields: [activeOrganizationId], references: [id], onDelete: SetNull)
+  sessionToken         String        @unique // Hash SHA-256 de rawSessionSecret
+  sessionVersion       Int           @default(1)
+  auth0Sid             String?
+  deviceInfo           String?
+  ipAddress            String?
+  expiresAt            DateTime      // Vencimiento absoluto (8 horas)
+  idleExpiresAt        DateTime      // Vencimiento por inactividad (30 minutos)
+  revokedAt            DateTime?     // Marca de revocación individual
+  createdAt            DateTime      @default(now())
+  lastActiveAt         DateTime      @default(now())
+
+  @@index([userId])
+  @@index([activeOrganizationId])
+}
+
+model OrganizationMembership {
+  id             String           @id @default(uuid())
+  userId         String
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role           OrganizationRole
+  status         MembershipStatus @default(ACTIVE)
+  invitedById    String?
+  joinedAt       DateTime?
+  suspendedAt    DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@unique([userId, organizationId])
+  @@index([organizationId, status])
+  @@index([userId, status])
+}
+
+model OrganizationInvitation {
+  id               String           @id @default(uuid())
+  organizationId   String
+  organization     Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role             OrganizationRole
+  tokenHash        String           @unique // Hash SHA-256 de token CSPRNG (nunca plaintext)
+  invitedEmail     String           // Email normalizado en minúsculas
+  targetUserId     String?
+  targetUser       User?            @relation("TargetInvitedUser", fields: [targetUserId], references: [id], onDelete: SetNull)
+  invitedById      String
+  invitedBy        User             @relation("InvitedByUser", fields: [invitedById], references: [id], onDelete: Restrict)
+  status           InvitationStatus @default(PENDING)
+  expiresAt        DateTime
+  acceptedAt       DateTime?
+  acceptedByUserId String?
+  revokedAt        DateTime?
+  revokedById      String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([organizationId, status])
+  @@index([expiresAt])
+}
+
+model OidcTransaction {
+  transactionId String   @id // Identificador opaco de correlación
+  state         String
+  nonce         String
+  codeVerifier  String   // Cifrado autenticado AES-256-GCM en reposo
+  expiresAt     DateTime // TTL máx 10 minutos
+  createdAt     DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
 // --------------------------------------
 // 2. CORE LEGAL ENTITIES
 // --------------------------------------
 
 enum ExpedienteEstado {
   INICIO
+  EN_TRAMITE
   PRUEBA
   ALEGATOS
   SENTENCIA
   APELACION
+  PENDIENTE
+  SUSPENDIDO
+  FINALIZADO
   ARCHIVADO
+}
+
+enum RolParteProcesal {
+  ACTOR
+  DEMANDADO
+  DENUNCIANTE
+  DENUNCIADO
+  QUERELLANTE
+  IMPUTADO
+  SOLICITANTE
+  BENEFICIARIO
+  TERCERO
+  OTRO
 }
 
 model Expediente {
@@ -91,23 +286,67 @@ model Expediente {
   numeroExpediente String
   juzgado          String
   jurisdiccion     String
-  estado           ExpedienteEstado @default(INICIO)
+  provincia        String?
+  fuero            String?
+  secretaria       String?
+  tipoProceso      String?
+  materia          String?
+  fechaInicio      DateTime?
+  descripcion      String?
+  estado           ExpedienteEstado @default(EN_TRAMITE)
   tags             String[]
   
   organizationId   String
   organization     Organization     @relation(fields: [organizationId], references: [id])
   
+  responsableId    String?
+  responsable      User?            @relation("ExpedienteResponsable", fields: [responsableId], references: [id])
   users            User[]           // Abogados asignados
+  partes           ExpedienteParte[]
   documentos       Documento[]
+  documents        Document[]
+  legalWritings    LegalWriting[]
+  legalAiConversations LegalAiConversation[]
+  legalAiAnalyses      LegalAiAnalysis[]
   eventos          EventoAgenda[]
+  movimientos      MovimientoProcesal[]
+  agendaEvents     AgendaEvent[]
+  vencimientos     Vencimiento[]
   drafts           LegalDraft[]
   riskAnalyses     LegalRiskAnalysis[]
-
   
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
   @@index([organizationId])
+  @@index([organizationId, estado])
+  @@index([organizationId, numeroExpediente])
+}
+
+model ExpedienteParte {
+  id             String           @id @default(uuid())
+  expedienteId   String
+  expediente     Expediente       @relation(fields: [expedienteId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  clientId       String?
+  client         Client?          @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  tipoParte      ClientPersonType @default(HUMANA)
+  nombre         String
+  cuitDni        String?
+  rol            RolParteProcesal @default(ACTOR)
+  caracter       String?
+  esCliente      Boolean          @default(false)
+  observaciones  String?
+
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([expedienteId])
+  @@index([organizationId])
+  @@index([clientId])
 }
 
 enum DocumentoTipo {
@@ -122,6 +361,8 @@ model Documento {
   id             String        @id @default(uuid())
   expedienteId   String
   expediente     Expediente    @relation(fields: [expedienteId], references: [id])
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   
   tipo           DocumentoTipo
   storagePath    String
@@ -144,20 +385,480 @@ model Documento {
   updatedAt      DateTime      @updatedAt
   
   versions       DocumentVersion[]
+
+  @@index([organizationId])
+}
+
+// --------------------------------------
+// 2b. AUTH-08: DOCUMENT MANAGEMENT (LOGICAL DOCUMENTS + IMMUTABLE VERSIONS)
+// --------------------------------------
+
+enum DocumentCategory {
+  DEMANDA
+  CONTESTACION
+  ESCRITO_JUDICIAL
+  RESOLUCION
+  SENTENCIA
+  NOTIFICACION
+  PODER
+  CONTRATO
+  DOCUMENTACION_CLIENTE
+  PRUEBA_DOCUMENTAL
+  INFORME
+  DICTAMEN
+  COMPROBANTE
+  CORRESPONDENCIA
+  OTRO
+}
+
+enum DocumentStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model Document {
+  id                    String               @id @default(uuid())
+  organizationId        String
+  organization          Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  expedienteId          String?
+  expediente            Expediente?          @relation(fields: [expedienteId], references: [id], onDelete: SetNull)
+  clientId              String?
+  client                Client?              @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  movimientoProcesalId  String?
+  movimientoProcesal    MovimientoProcesal?  @relation(fields: [movimientoProcesalId], references: [id], onDelete: SetNull)
+
+  title                 String
+  description           String?
+  category              DocumentCategory     @default(OTRO)
+  documentDate          DateTime?
+  status                DocumentStatus       @default(ACTIVE)
+  currentVersionNumber  Int                  @default(0)
+
+  createdById           String
+  createdBy             User                 @relation("DocumentCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  archivedAt            DateTime?
+  archivedById          String?
+  archivedBy            User?                @relation("DocumentArchivedBy", fields: [archivedById], references: [id], onDelete: SetNull)
+
+  versions              DocumentFileVersion[]
+  legalDraftExports     LegalDraftExport[]
+
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, category])
+  @@index([organizationId, expedienteId])
+  @@index([organizationId, clientId])
+  @@index([organizationId, movimientoProcesalId])
+}
+
+model DocumentFileVersion {
+  id               String       @id @default(uuid())
+  organizationId   String
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  documentId       String
+  document         Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  versionNumber    Int
+  originalFilename String
+  storageKey       String       @unique
+  mimeType         String
+  sizeBytes        Int
+  sha256           String
+
+  uploadedById     String
+  uploadedBy       User         @relation("DocumentVersionUploadedBy", fields: [uploadedById], references: [id], onDelete: Restrict)
+  uploadedAt       DateTime     @default(now())
+  changeNote       String?
+
+  @@unique([documentId, versionNumber])
+  @@index([organizationId])
+  @@index([organizationId, documentId])
+}
+
+// --------------------------------------
+// 2c. AUTH-09: LEGAL DRAFTING, VERSIONS, TEMPLATES, REVIEWS & EXPORTS
+// --------------------------------------
+
+enum LegalDraftCategory {
+  ESCRITO_JUDICIAL
+  CONTRATO
+}
+
+enum LegalDraftDocumentType {
+  DEMANDA
+  CONTESTACION_DEMANDA
+  CONTESTACION_TRASLADO
+  EXCEPCION
+  APERTURA_PRUEBA
+  ALEGATO
+  APELACION
+  RECURSO
+  EXPRESION_AGRAVIOS
+  CONTESTACION_AGRAVIOS
+  PRONTO_DESPACHO
+  MEDIDA_CAUTELAR
+  ESCRITO_LIBRE
+  SOLICITUD
+  OFICIO
+  PRESENTACION_SIMPLE
+  INCIDENTE
+  CONTRATO_LOCACION
+  CONTRATO_SERVICIOS
+  CONTRATO_NDA
+  CONTRATO_COMPRAVENTA
+  CONTRATO_MUTUO
+  OTRO_CONTRATO
+  OTRO
+}
+
+enum LegalDraftStatus {
+  DRAFT
+  IN_REVIEW
+  CHANGES_REQUESTED
+  APPROVED
+  FINALIZED
+  ARCHIVED
+}
+
+enum LegalContentFormat {
+  TIPTAP_JSON
+}
+
+enum LegalDraftReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+}
+
+enum LegalDraftExportFormat {
+  DOCX
+  PDF
+}
+
+enum LegalDraftExportStatus {
+  COMPLETED
+  FAILED
+}
+
+model LegalDraftTemplate {
+  id               String                 @id @default(uuid())
+  organizationId   String?
+  organization     Organization?          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  name             String
+  description      String?
+  category         LegalDraftCategory     @default(ESCRITO_JUDICIAL)
+  documentType     LegalDraftDocumentType @default(OTRO)
+  versionNumber    Int                    @default(1)
+  baseInstructions String?                @db.Text
+  variables        Json                   @default("[]")
+  requiredInfo     Json                   @default("[]")
+  jurisdiction     String?
+  fuero            String?
+  content          Json
+  contentFormat    LegalContentFormat     @default(TIPTAP_JSON)
+  isSystemTemplate Boolean                @default(false)
+  isActive         Boolean                @default(true)
+
+  createdById      String?
+  createdBy        User?                  @relation("LegalDraftTemplateCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  archivedAt       DateTime?
+  archivedById     String?
+  archivedBy       User?                  @relation("LegalDraftTemplateArchivedBy", fields: [archivedById], references: [id], onDelete: SetNull)
+
+  derivedWritings  LegalWriting[]
+
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, isActive])
+  @@index([isSystemTemplate, isActive])
+  @@index([documentType])
+  @@index([category])
+}
+
+model LegalWriting {
+  id                   String                 @id @default(uuid())
+  organizationId       String
+  organization         Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  expedienteId         String?
+  expediente           Expediente?            @relation(fields: [expedienteId], references: [id], onDelete: Restrict)
+  clientId             String?
+  client               Client?                @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  sourceTemplateId     String?
+  sourceTemplate       LegalDraftTemplate?    @relation(fields: [sourceTemplateId], references: [id], onDelete: SetNull)
+
+  title                String
+  category             LegalDraftCategory     @default(ESCRITO_JUDICIAL)
+  documentType         LegalDraftDocumentType @default(OTRO)
+  jurisdiction         String?
+  courtName            String?
+  caseNumber           String?
+  status               LegalDraftStatus       @default(DRAFT)
+  currentVersionNumber Int                    @default(1)
+  isAiGenerated        Boolean                @default(false)
+  aiMetadata           Json?
+
+  createdById          String
+  createdBy            User                   @relation("LegalWritingCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  archivedAt           DateTime?
+  archivedById         String?
+  archivedBy           User?                  @relation("LegalWritingArchivedBy", fields: [archivedById], references: [id], onDelete: SetNull)
+
+  versions             LegalDraftVersion[]
+  reviews              LegalDraftReview[]
+  exports              LegalDraftExport[]
+
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, expedienteId])
+  @@index([organizationId, documentType])
+  @@index([organizationId, category])
+  @@index([organizationId, createdById])
+}
+
+model LegalDraftVersion {
+  id             String             @id @default(uuid())
+  organizationId String
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  legalDraftId   String
+  legalDraft     LegalWriting       @relation(fields: [legalDraftId], references: [id], onDelete: Cascade)
+
+  versionNumber  Int
+  content        Json
+  contentFormat  LegalContentFormat @default(TIPTAP_JSON)
+  plainText      String             @db.Text
+  changeNote     String?
+  generatedByAi  Boolean            @default(false)
+  aiMetadata     Json?
+
+  createdById    String
+  createdBy      User               @relation("LegalDraftVersionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt      DateTime           @default(now())
+
+  reviews        LegalDraftReview[]
+  exports        LegalDraftExport[]
+
+  @@unique([legalDraftId, versionNumber])
+  @@index([organizationId])
+  @@index([organizationId, legalDraftId])
+}
+
+model LegalDraftReview {
+  id            String                 @id @default(uuid())
+  organizationId String
+  organization  Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  legalDraftId  String
+  legalDraft    LegalWriting           @relation(fields: [legalDraftId], references: [id], onDelete: Cascade)
+  versionId     String
+  version       LegalDraftVersion      @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  requestedById String
+  requestedBy   User                   @relation("LegalDraftReviewRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  reviewerId    String?
+  reviewer      User?                  @relation("LegalDraftReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  status        LegalDraftReviewStatus @default(PENDING)
+  comments      String?                @db.Text
+  requestedAt   DateTime               @default(now())
+  reviewedAt    DateTime?
+
+  @@index([organizationId])
+  @@index([organizationId, legalDraftId])
+  @@index([organizationId, versionId])
+}
+
+model LegalDraftExport {
+  id                String                 @id @default(uuid())
+  organizationId    String
+  organization      Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  legalDraftId      String
+  legalDraft        LegalWriting           @relation(fields: [legalDraftId], references: [id], onDelete: Cascade)
+  versionId         String
+  version           LegalDraftVersion      @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  format            LegalDraftExportFormat
+  storageDocumentId String
+  storageDocument   Document               @relation(fields: [storageDocumentId], references: [id], onDelete: Restrict)
+
+  generatedById     String
+  generatedBy       User                   @relation("LegalDraftExportGeneratedBy", fields: [generatedById], references: [id], onDelete: Restrict)
+  generatedAt       DateTime               @default(now())
+  sha256            String
+  status            LegalDraftExportStatus @default(COMPLETED)
+  idempotencyKey    String?
+  optionsHash       String
+  exportOptions     Json?
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId])
+  @@index([organizationId, legalDraftId])
+  @@index([organizationId, versionId, format, optionsHash])
+}
+
+// --------------------------------------
+// 2d. AUTH-10: CONTEXTUAL LEGAL AI ASSISTANT CONVERSATIONS
+// --------------------------------------
+
+enum LegalAiConversationStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum LegalAiMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum LegalAiMessageStatus {
+  COMPLETED
+  FAILED
+}
+
+model LegalAiConversation {
+  id             String                    @id @default(uuid())
+  organizationId String
+  organization   Organization              @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  userId         String
+  user           User                      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  expedienteId   String?
+  expediente     Expediente?               @relation(fields: [expedienteId], references: [id], onDelete: SetNull)
+
+  title          String
+  status         LegalAiConversationStatus @default(ACTIVE)
+  lastMessageAt  DateTime?
+  archivedAt     DateTime?
+
+  messages       LegalAiMessage[]
+
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, userId, status])
+  @@index([organizationId, expedienteId])
+  @@index([organizationId, userId, lastMessageAt])
+}
+
+model LegalAiMessage {
+  id                String               @id @default(uuid())
+  organizationId    String
+  organization      Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  conversationId    String
+  conversation      LegalAiConversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  role              LegalAiMessageRole
+  content           String               @db.Text
+  messageStatus     LegalAiMessageStatus @default(COMPLETED)
+  clientMessageId   String?
+  contextReferences Json?
+  providerMetadata  Json?
+
+  createdAt         DateTime             @default(now())
+
+  @@unique([conversationId, clientMessageId])
+  @@index([organizationId])
+  @@index([organizationId, conversationId, createdAt])
+}
+
+// --------------------------------------
+// 2e. AUTH-11: LEGAL AI CASE & DOCUMENT ANALYSIS
+// --------------------------------------
+
+enum LegalAiAnalysisType {
+  INTEGRAL_CASE
+  FACTS_AND_CONTROVERSIES
+  DOCUMENTARY_EVIDENCE
+  PROCEDURAL_RISKS
+}
+
+enum LegalAiAnalysisStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  ARCHIVED
+}
+
+model LegalAiAnalysis {
+  id                String                @id @default(uuid())
+  organizationId    String
+  organization      Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  userId            String
+  user              User                  @relation(fields: [userId], references: [id], onDelete: Restrict)
+  expedienteId      String?
+  expediente        Expediente?           @relation(fields: [expedienteId], references: [id], onDelete: SetNull)
+
+  analysisType      LegalAiAnalysisType
+  title             String
+  status            LegalAiAnalysisStatus @default(PENDING)
+  inputInstructions String?               @db.Text
+
+  resultContent     Json?
+  editedContent     Json?
+  editedAt          DateTime?
+  sourceReferences  Json?
+  providerMetadata  Json?
+  archivedAt        DateTime?
+
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, userId, status])
+  @@index([organizationId, expedienteId, createdAt])
+  @@index([organizationId, analysisType])
+}
+
+enum ClientPersonType {
+  HUMANA
+  JURIDICA
+}
+
+enum ClientStatus {
+  ACTIVO
+  INACTIVO
+  ARCHIVADO
 }
 
 model Client {
-  id             String       @id @default(uuid())
+  id             String           @id @default(uuid())
+  personType     ClientPersonType @default(HUMANA)
   firstName      String
-  lastName       String
+  lastName       String?
+  dniCuit        String?
   email          String?
   phone          String?
+  address        String?
+  city           String?
+  province       String?
+  notes          String?
+  status         ClientStatus     @default(ACTIVO)
   
   organizationId String
-  organization   Organization @relation(fields: [organizationId], references: [id])
+  organization   Organization     @relation(fields: [organizationId], references: [id])
   
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  partesEnExpedientes ExpedienteParte[]
+  documents           Document[]
+  legalWritings       LegalWriting[]
+
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@unique([organizationId, dniCuit])
 }
 
 // --------------------------------------
@@ -177,21 +878,194 @@ enum EventoEstado {
 }
 
 model EventoAgenda {
-  id               String       @id @default(uuid())
+  id               String        @id @default(uuid())
   expedienteId     String
-  expediente       Expediente   @relation(fields: [expedienteId], references: [id])
+  expediente       Expediente    @relation(fields: [expedienteId], references: [id])
+  organizationId   String?
+  organization     Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   
   titulo           String
   descripcion      String?
   fechaVencimiento DateTime
   tipoPlazo        PlazoTipo
-  estado           EventoEstado @default(PENDIENTE)
+  estado           EventoEstado  @default(PENDIENTE)
   
-  isCritical       Boolean      @default(false)
-  alertConfig      Json?        // { "t_minus_7": true, "t_minus_24": true }
+  isCritical       Boolean       @default(false)
+  alertConfig      Json?         // { "t_minus_7": true, "t_minus_24": true }
   
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([organizationId])
+}
+
+// --------------------------------------
+// 3a. AUTH-07: PROCEDURAL MOVEMENTS, AGENDA EVENTS & DEADLINES
+// --------------------------------------
+
+enum TipoMovimientoProcesal {
+  PRESENTACION
+  NOTIFICACION
+  PROVIDENCIA
+  RESOLUCION
+  SENTENCIA
+  AUDIENCIA
+  DILIGENCIA
+  TRASLADO
+  CONTESTACION
+  RECURSO
+  OTRO
+}
+
+enum OrigenMovimiento {
+  MANUAL
+  SISTEMA
+  IMPORTACION
+}
+
+model MovimientoProcesal {
+  id               String                 @id @default(uuid())
+  organizationId   String
+  organization     Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expedienteId     String
+  expediente       Expediente             @relation(fields: [expedienteId], references: [id], onDelete: Cascade)
+
+  tipo             TipoMovimientoProcesal @default(OTRO)
+  titulo           String
+  descripcion      String?
+  fechaActuacion   DateTime
+  fechaRegistro    DateTime               @default(now())
+  registradoPorId  String
+  registradoPor    User                   @relation("MovimientoRegistradoPor", fields: [registradoPorId], references: [id], onDelete: Restrict)
+  origen           OrigenMovimiento       @default(MANUAL)
+  referencia       String?
+  metadatos        Json?
+
+  // Baja lógica / anulación trazable (nunca destrucción silenciosa)
+  anuladoAt        DateTime?
+  anuladoPorId     String?
+  anuladoPor       User?                  @relation("MovimientoAnuladoPor", fields: [anuladoPorId], references: [id], onDelete: SetNull)
+  anuladoMotivo    String?
+
+  documents        Document[]
+
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, expedienteId, fechaActuacion])
+  @@index([expedienteId, fechaActuacion])
+}
+
+enum TipoEventoAgenda {
+  AUDIENCIA
+  REUNION_CLIENTE
+  REUNION_INTERNA
+  DILIGENCIA
+  PRESENTACION_PROGRAMADA
+  LLAMADA
+  TRAMITE
+  OTRO
+}
+
+enum EstadoEventoAgenda {
+  PROGRAMADO
+  CONFIRMADO
+  COMPLETADO
+  CANCELADO
+}
+
+model AgendaEvent {
+  id              String             @id @default(uuid())
+  organizationId  String
+  organization    Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expedienteId    String?
+  expediente      Expediente?        @relation(fields: [expedienteId], references: [id], onDelete: SetNull)
+
+  titulo          String
+  descripcion     String?
+  tipo            TipoEventoAgenda   @default(OTRO)
+  fechaInicio     DateTime
+  fechaFin        DateTime?
+  ubicacion       String?
+  estado          EstadoEventoAgenda @default(PROGRAMADO)
+
+  responsableId   String?
+  responsable     User?              @relation("AgendaEventResponsable", fields: [responsableId], references: [id], onDelete: SetNull)
+  creadoPorId     String
+  creadoPor       User               @relation("AgendaEventCreador", fields: [creadoPorId], references: [id], onDelete: Restrict)
+
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, fechaInicio])
+  @@index([organizationId, estado])
+  @@index([organizationId, responsableId])
+  @@index([expedienteId])
+}
+
+enum TipoVencimiento {
+  PROCESAL
+  DOCUMENTACION
+  PRESENTACION
+  ADMINISTRATIVO
+  INTERNO
+  OTRO
+}
+
+enum PrioridadVencimiento {
+  BAJA
+  NORMAL
+  ALTA
+  CRITICA
+}
+
+enum EstadoVencimiento {
+  PENDIENTE
+  EN_CURSO
+  CUMPLIDO
+  CANCELADO
+}
+
+enum OrigenFechaLimite {
+  MANUAL
+}
+
+model Vencimiento {
+  id                String               @id @default(uuid())
+  organizationId    String
+  organization      Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expedienteId      String?
+  expediente        Expediente?          @relation(fields: [expedienteId], references: [id], onDelete: SetNull)
+
+  titulo            String
+  descripcion       String?
+  tipo              TipoVencimiento      @default(PROCESAL)
+  fechaLimite       DateTime
+  origenFechaLimite OrigenFechaLimite    @default(MANUAL)
+  prioridad         PrioridadVencimiento @default(NORMAL)
+  estado            EstadoVencimiento    @default(PENDIENTE)
+  observaciones     String?
+
+  responsableId     String?
+  responsable       User?                @relation("VencimientoResponsable", fields: [responsableId], references: [id], onDelete: SetNull)
+  creadoPorId       String
+  creadoPor         User                 @relation("VencimientoCreador", fields: [creadoPorId], references: [id], onDelete: Restrict)
+
+  cumplidoAt        DateTime?
+  cumplidoPorId     String?
+  cumplidoPor       User?                @relation("VencimientoCumplidoPor", fields: [cumplidoPorId], references: [id], onDelete: SetNull)
+
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, fechaLimite])
+  @@index([organizationId, estado])
+  @@index([organizationId, prioridad])
+  @@index([organizationId, responsableId])
+  @@index([expedienteId])
 }
 
 // --------------------------------------
@@ -312,30 +1186,36 @@ model LegalNorm {
 // --------------------------------------
 
 model AuditLog {
-  id          String   @id @default(uuid())
+  id             String        @id @default(uuid())
   
-  userId      String?
-  user        User?    @relation(fields: [userId], references: [id])
+  userId         String?
+  user           User?         @relation(fields: [userId], references: [id])
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  targetUserId   String?
   
-  action      String   // LOGIN, READ_DOC, DELETE_EXP, EXPORT
-  entityId    String?
-  entityTable String?
+  action         String        // LOGIN, READ_DOC, ORGANIZATION_CREATED, MEMBERSHIP_SUSPENDED, etc.
+  result         String?       // SUCCESS, DENIED, FAILED
+  correlationId  String?
+  entityId       String?
+  entityTable    String?
   
-  oldValues   Json?
-  newValues   Json?
+  oldValues      Json?
+  newValues      Json?
   
-  ipAddress   String?
-  userAgent   String?
+  ipAddress      String?
+  userAgent      String?
   
   // Forensics (Hash Chain)
-  prevHash    String?  // Hash of the previous log entry
-  currentHash String?  // SHA256(prevHash + content)
-  signature   String?  // Optional external signature
+  prevHash       String?       // Hash of the previous log entry
+  currentHash    String?       // SHA256(prevHash + content)
+  signature      String?       // Optional external signature
   
-  timestamp   DateTime @default(now())
+  timestamp      DateTime      @default(now())
 
   @@index([userId])
-
+  @@index([organizationId])
+  @@index([correlationId])
   @@index([timestamp])
 }
 
@@ -344,19 +1224,20 @@ model AuditLog {
 // --------------------------------------
 
 model AIInteraction {
-  id             String   @id @default(uuid())
-  organizationId String
-  userId         String?
+  id               String       @id @default(uuid())
+  organizationId   String
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  userId           String?
   
-  endpoint       String   // /ai/ask, /ai/analyze
-  promptTokens   Int
+  endpoint         String   // /ai/ask, /ai/analyze
+  promptTokens     Int
   completionTokens Int
-  costUsd        Decimal  @db.Decimal(10, 6)
+  costUsd          Decimal  @db.Decimal(10, 6)
   
-  promptHash     String?  // For caching (simple)
-  response       String   @db.Text
+  promptHash       String?  // For caching (simple)
+  response         String   @db.Text
   
-  timestamp      DateTime @default(now())
+  timestamp        DateTime @default(now())
   
   @@index([organizationId])
 }
@@ -499,46 +1380,52 @@ model JurisprudenceCitation {
 // --------------------------------------
 
 model AIChatSession {
-  id            String          @id @default(uuid())
-  expedienteId  String          
-  userId        String
-  user          User            @relation(fields: [userId], references: [id])
-  
-  title         String?         
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-  
-  // Memoria a largo plazo
-  summary       String?         @db.Text 
-  contextData   Json?           
+  id             String          @id @default(uuid())
+  expedienteId   String
+  userId         String
+  user           User            @relation(fields: [userId], references: [id])
+  organizationId String?
+  organization   Organization?   @relation(fields: [organizationId], references: [id], onDelete: SetNull)
 
-  messages      AIChatMessage[]
+  title          String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  // Memoria a largo plazo
+  summary        String?         @db.Text
+  contextData    Json?
+
+  messages       AIChatMessage[]
 
   @@index([expedienteId])
   @@index([userId])
+  @@index([organizationId])
 }
 
 model AIChatMessage {
-  id            String        @id @default(uuid())
-  sessionId     String
-  session       AIChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  
-  role          String        // 'user', 'assistant', 'system'
-  content       String        @db.Text
-  
+  id             String        @id @default(uuid())
+  sessionId      String
+  session        AIChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  role           String        // 'user', 'assistant', 'system'
+  content        String        @db.Text
+
   // Auditoría y Costos
-  tokensInput   Int?
-  tokensOutput  Int?
-  modelModel    String?       
-  cost          Decimal?      @db.Decimal(10, 6)
-  
+  tokensInput    Int?
+  tokensOutput   Int?
+  modelModel     String?
+  cost           Decimal?      @db.Decimal(10, 6)
+
   // Prevención de Alucinaciones (Grounding)
-  citations     Json?         // Array de fuentes usadas { types: 'LEY'|'FALLO'|'DOC', id, title, fragment }
-  isVerified    Boolean       @default(false) 
-  
-  createdAt     DateTime      @default(now())
-  
+  citations      Json?         // Array de fuentes usadas { types: 'LEY'|'FALLO'|'DOC', id, title, fragment }
+  isVerified     Boolean       @default(false)
+
+  createdAt      DateTime      @default(now())
+
   @@index([sessionId])
+  @@index([organizationId])
 }
 
 // --------------------------------------
@@ -554,36 +1441,39 @@ enum DraftType {
 }
 
 model LegalDraft {
-  id              String      @id @default(uuid())
+  id              String        @id @default(uuid())
   
   userId          String
-  user            User        @relation(fields: [userId], references: [id])
+  user            User          @relation(fields: [userId], references: [id])
+  organizationId  String?
+  organization    Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
   
   // Optional link to an existing case
   expedienteId    String?
-  expediente      Expediente? @relation(fields: [expedienteId], references: [id])
+  expediente      Expediente?   @relation(fields: [expedienteId], references: [id])
   
   draftType       DraftType
   
   // Inputs
   jurisdiction    String
   fuero           String
-  facts           String      @db.Text
-  dataContext     Json?       // Extra data provided about the case
+  facts           String        @db.Text
+  dataContext     Json?         // Extra data provided about the case
   
   // Outputs (Structured)
-  header          String?     @db.Text
-  bodyFacts       String?     @db.Text
-  bodyLaw         String?     @db.Text
-  petitorio       String?     @db.Text
-  fullText        String?     @db.Text // Full assembled text
+  header          String?       @db.Text
+  bodyFacts       String?       @db.Text
+  bodyLaw         String?       @db.Text
+  petitorio       String?       @db.Text
+  fullText        String?       @db.Text // Full assembled text
   
-  isFinal         Boolean     @default(false)
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  isFinal         Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
   
   @@index([userId])
   @@index([expedienteId])
+  @@index([organizationId])
 }
 
 // --------------------------------------
@@ -598,28 +1488,31 @@ enum RiskLevel {
 }
 
 model LegalRiskAnalysis {
-  id              String      @id @default(uuid())
-  expedienteId    String
-  expediente      Expediente  @relation(fields: [expedienteId], references: [id])
+  id                 String        @id @default(uuid())
+  expedienteId       String
+  expediente         Expediente    @relation(fields: [expedienteId], references: [id])
+  organizationId     String?
+  organization       Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   
   // Overall Scoring
-  score           Int         // 0-100 (Higher is riskier for the client's position/goal)
-  riskLevel       RiskLevel
+  score              Int           // 0-100 (Higher is riskier for the client's position/goal)
+  riskLevel          RiskLevel
   
   // Factor Breakdown (0-100)
-  jurisprudenceScore Int?     // How much jurisprudence is against us?
-  normativeScore     Int?     // Are laws outdated or unstable?
-  complexityScore    Int?     // Is the case inherently complex?
+  jurisprudenceScore Int?          // How much jurisprudence is against us?
+  normativeScore     Int?          // Are laws outdated or unstable?
+  complexityScore    Int?          // Is the case inherently complex?
   
   // Detailed Analysis
-  factors         Json        // { "contradictory_jurisprudence": true, "old_law": false, ... }
-  explanation     String      @db.Text
+  factors            Json          // { "contradictory_jurisprudence": true, "old_law": false, ... }
+  explanation        String        @db.Text
   
   // Audit
-  userId          String?     // Who requested it
-  analyzedAt      DateTime    @default(now())
+  userId             String?       // Who requested it
+  analyzedAt         DateTime      @default(now())
   
   @@index([expedienteId])
+  @@index([organizationId])
 }
 
 // --------------------------------------
@@ -627,9 +1520,11 @@ model LegalRiskAnalysis {
 // --------------------------------------
 
 model DocumentVersion {
-  id             String     @id @default(uuid())
+  id             String        @id @default(uuid())
   documentId     String
-  document       Documento  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  document       Documento     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   
   versionNumber  Int
   storagePath    String
@@ -638,14 +1533,15 @@ model DocumentVersion {
   fileSize       Int
   
   hashSha256     String
-  ocrContent     String?    @db.Text
+  ocrContent     String?       @db.Text
   
-  changesSummary String?    // Diff summary vs previous version
+  changesSummary String?       // Diff summary vs previous version
   
-  uploadedBy     String?    // UserId
-  createdAt      DateTime   @default(now())
+  uploadedBy     String?       // UserId
+  createdAt      DateTime      @default(now())
   
   @@index([documentId])
+  @@index([organizationId])
 }
 
 // --------------------------------------
@@ -792,6 +1688,7 @@ model EventLog {
   isAnomaly      Boolean     @default(false)
   
   organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
   
   @@index([timestamp])
   @@index([actorId])
@@ -804,19 +1701,22 @@ model EventLog {
 // --------------------------------------
 
 model EmployeeMetric {
-  id             String      @id @default(uuid())
-  userId         String
-  date           DateTime    @db.Date
+  id                String        @id @default(uuid())
+  userId            String
+  organizationId    String?
+  organization      Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  date              DateTime      @db.Date
   
-  activeTimeMinutes Int      @default(0)
-  ticketsResolved   Int      @default(0)
-  aiPromptsUsed     Int      @default(0)
-  documentsRead     Int      @default(0)
+  activeTimeMinutes Int           @default(0)
+  ticketsResolved   Int           @default(0)
+  aiPromptsUsed     Int           @default(0)
+  documentsRead     Int           @default(0)
   
-  productivityScore Int      @default(0) // 0-100
+  productivityScore Int           @default(0) // 0-100
   
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
   
   @@unique([userId, date])
+  @@index([organizationId])
 }

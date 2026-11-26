@@ -1,64 +1,74 @@
-
-import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { Injectable } from "@nestjs/common";
+import { ScopedPrismaService } from "../authz/scoped-prisma.service";
 
 @Injectable()
 export class UsageControlService {
-    constructor(private prisma: PrismaService) { }
+  constructor(private readonly scopedPrisma: ScopedPrismaService) {}
 
-    /**
-     * Checks if an organization has enough AI tokens quota.
-     * Should be called before any LLM inference.
-     */
-    async checkAiQuota(organizationId: string, estimatedCostTokens: number = 1000): Promise<boolean> {
-        // 1. Get current usage and plan limits
-        // This query joins Organization -> SubscriptionPlan (not yet fully modeled in schema relation but logically present)
-        // For MVP we assume limits hardcoded or from a Plan table
+  /**
+   * Verifica cuota de tokens IA estrictamente dentro del contexto organizacional (RLS + filtro).
+   */
+  async checkAiQuota(
+    organizationId: string,
+    estimatedCostTokens: number = 1000,
+  ): Promise<boolean> {
+    return this.scopedPrisma.runInOrgContext({ organizationId }, async (tx) => {
+      const usage = await tx.tenantUsage.findFirst({
+        where: { organizationId },
+      });
 
-        const usage = await this.prisma.tenantUsage.findUnique({
-            where: { organizationId }
+      if (!usage) return true;
+
+      const LIMIT = 50000;
+      if (usage.aiTokensUsed + estimatedCostTokens > LIMIT) {
+        return false;
+      }
+
+      return true;
+    });
+  }
+
+  /**
+   * Registra uso agregado (TenantUsage) y detalle granular (AIInteraction) bajo ScopedPrismaService.
+   */
+  async trackUsage(
+    organizationId: string,
+    tokens: number,
+    endpoint: string,
+    userId: string,
+  ) {
+    await this.scopedPrisma.runInOrgContext({ organizationId }, async (tx) => {
+      const existing = await tx.tenantUsage.findFirst({
+        where: { organizationId },
+        select: { id: true },
+      });
+
+      if (existing) {
+        await tx.tenantUsage.updateMany({
+          where: { id: existing.id, organizationId },
+          data: { aiTokensUsed: { increment: tokens } },
         });
-
-        if (!usage) return true; // Fail open or closed depending on policy. Open for now.
-
-        // Mock Limit: 50,000 for STARTER
-        const LIMIT = 50000;
-
-        if (usage.aiTokensUsed + estimatedCostTokens > LIMIT) {
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Records actual usage after an operation
-     */
-    async trackUsage(organizationId: string, tokens: number, endpoint: string, userId: string) {
-        // Update aggregated usage
-        await this.prisma.tenantUsage.upsert({
-            where: { organizationId },
-            create: {
-                organizationId,
-                periodEnd: new Date(), // Should be next month
-                aiTokensUsed: tokens
-            },
-            update: {
-                aiTokensUsed: { increment: tokens }
-            }
+      } else {
+        await tx.tenantUsage.create({
+          data: {
+            organizationId,
+            periodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            aiTokensUsed: tokens,
+          },
         });
+      }
 
-        // Log granular interaction
-        await this.prisma.aIInteraction.create({
-            data: {
-                organizationId,
-                userId,
-                endpoint,
-                promptTokens: Math.floor(tokens / 2), // Approx split
-                completionTokens: Math.ceil(tokens / 2),
-                costUsd: 0, // Calculate based on model price
-                response: "Logged"
-            }
-        });
-    }
+      await tx.aIInteraction.create({
+        data: {
+          organizationId,
+          userId,
+          endpoint,
+          promptTokens: Math.floor(tokens / 2),
+          completionTokens: Math.ceil(tokens / 2),
+          costUsd: 0,
+          response: "Logged",
+        },
+      });
+    });
+  }
 }

@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, Scale, Calendar, FileText, Settings, Bot, LogOut } from 'lucide-react';
+import { LayoutDashboard, Scale, Calendar, FileText, Settings, Bot, LogOut, Users } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
 export const MainLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -7,6 +7,7 @@ export const MainLayout: React.FC<{ children: React.ReactNode }> = ({ children }
 
     const navItems = [
         { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
+        { label: 'Clientes', icon: Users, path: '/clientes' },
         { label: 'Expedientes', icon: Scale, path: '/expedientes' },
         { label: 'Agenda Legal', icon: Calendar, path: '/agenda' },
         { label: 'Documentos', icon: FileText, path: '/docs' },

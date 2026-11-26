@@ -1,78 +1,116 @@
+import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { ChatContextService } from "./chat-context.service";
+import { ConfigService } from "@nestjs/config";
+import { ChatOpenAI } from "@langchain/openai";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { ScopedPrismaService } from "../../authz/scoped-prisma.service";
+import { ActiveOrgContext } from "../../authz/guards/active-org-context.guard";
 
-import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from '../../prisma.service';
-import { ChatContextService } from './chat-context.service';
-import { ConfigService } from '@nestjs/config';
-import { ChatOpenAI } from '@langchain/openai';
-import { HumanMessage, SystemMessage } from '@langchain/core/messages';
+const GENERAL_WORKSPACE_ID = "general-workspace-user";
 
 @Injectable()
 export class AIChatService {
-    private readonly logger = new Logger(AIChatService.name);
-    private chatModel: ChatOpenAI;
+  private readonly logger = new Logger(AIChatService.name);
+  private chatModel: ChatOpenAI;
 
-    constructor(
-        private prisma: PrismaService,
-        private contextService: ChatContextService,
-        private configService: ConfigService
-    ) {
-        const apiKey = this.configService.get('OPENAI_API_KEY');
-        this.chatModel = new ChatOpenAI({
-            openAIApiKey: apiKey || 'mock-key',
-            modelName: 'gpt-4o', // Recomendado para razonamiento complejo
-            temperature: 0.1, // Muy bajo para reducir alucinaciones
-        });
+  constructor(
+    private readonly scopedPrisma: ScopedPrismaService,
+    private readonly contextService: ChatContextService,
+    private readonly configService: ConfigService,
+  ) {
+    const apiKey = this.configService.get("OPENAI_API_KEY");
+    this.chatModel = new ChatOpenAI({
+      openAIApiKey: apiKey || "mock-key",
+      modelName: "gpt-4o",
+      temperature: 0.1,
+    });
+  }
+
+  private async assertExpedienteOwnership(
+    expedienteId: string,
+    ctx: ActiveOrgContext,
+  ): Promise<void> {
+    if (expedienteId === GENERAL_WORKSPACE_ID) {
+      return;
     }
+    const found = await this.scopedPrisma.runInOrgContext(ctx, (tx) =>
+      tx.expediente.findFirst({
+        where: { id: expedienteId, organizationId: ctx.organizationId },
+        select: { id: true },
+      }),
+    );
+    if (!found) {
+      throw new NotFoundException("Expediente not found");
+    }
+  }
 
-    /**
-     * Procesa un mensaje de chat dentro del contexto de un expediente
-     */
-    async chat(expedienteId: string, userId: string, message: string) {
-        this.logger.log(`Chat request for Expediente ${expedienteId} by User ${userId}`);
+  /**
+   * Procesa un mensaje de chat dentro del contexto organizacional activo.
+   */
+  async chat(expedienteId: string, message: string, ctx: ActiveOrgContext) {
+    this.logger.log(
+      `Chat request for Expediente ${expedienteId} in Org ${ctx.organizationId}`,
+    );
 
-        // 1. Obtener o crear sesión persistente
-        let session = await this.prisma.aIChatSession.findFirst({
-            where: { expedienteId, userId }
+    await this.assertExpedienteOwnership(expedienteId, ctx);
+
+    const { session, recentMessages } = await this.scopedPrisma.runInOrgContext(
+      ctx,
+      async (tx) => {
+        let existing = await tx.aIChatSession.findFirst({
+          where: {
+            expedienteId,
+            userId: ctx.userId,
+            organizationId: ctx.organizationId,
+          },
         });
 
-        if (!session) {
-            session = await this.prisma.aIChatSession.create({
-                data: {
-                    expedienteId,
-                    userId,
-                    title: `Chat #${expedienteId.substring(0, 6)}...`,
-                }
-            });
+        if (!existing) {
+          existing = await tx.aIChatSession.create({
+            data: {
+              expedienteId,
+              userId: ctx.userId,
+              organizationId: ctx.organizationId,
+              title: `Chat #${expedienteId.substring(0, 6)}...`,
+            },
+          });
         }
 
-        // 2. Persistir mensaje del usuario
-        await this.prisma.aIChatMessage.create({
-            data: {
-                sessionId: session.id,
-                role: 'user',
-                content: message,
-            }
+        await tx.aIChatMessage.create({
+          data: {
+            sessionId: existing.id,
+            organizationId: ctx.organizationId,
+            role: "user",
+            content: message,
+          },
         });
 
-        // 3. Recuperar historial reciente para contexto (Short-term memory)
-        const recentMessages = await this.prisma.aIChatMessage.findMany({
-            where: { sessionId: session.id },
-            orderBy: { createdAt: 'desc' },
-            take: 10 // Últimos 5 intercambios
+        const msgs = await tx.aIChatMessage.findMany({
+          where: {
+            sessionId: existing.id,
+            organizationId: ctx.organizationId,
+          },
+          orderBy: { createdAt: "desc" },
+          take: 10,
         });
-        // Ordenar cronológicamente para el prompt
-        recentMessages.reverse();
+        msgs.reverse();
 
-        // Formatear historial para el contexto
-        const historyText = recentMessages
-            .map(m => `[${m.role.toUpperCase()}]: ${m.content}`)
-            .join('\n');
+        return { session: existing, recentMessages: msgs };
+      },
+    );
 
-        // 4. Construir Contexto RAG (Expediente + Leyes + Jurisprudencia + Historial)
-        const contextBlock = await this.contextService.buildContext(expedienteId, message, historyText);
+    const historyText = recentMessages
+      .map((m) => `[${m.role.toUpperCase()}]: ${m.content}`)
+      .join("\n");
 
-        // 5. System Prompt (Ingeniería de Prompt para evitar alucinaciones)
-        const systemPrompt = `
+    const contextBlock = await this.contextService.buildContext(
+      expedienteId,
+      message,
+      historyText,
+      ctx,
+    );
+
+    const systemPrompt = `
 Eres "Abogado IA", un asistente jurídico senior especializado en Derecho Argentino.
 Actúas como copiloto del abogado usuario en el análisis del expediente actual.
 
@@ -80,91 +118,116 @@ DIRECTRICES DE SEGURIDAD Y VERACIDAD (Anti-Alucinación):
 1. TU ÚNICA FUENTE DE VERDAD es el bloque "CONTEXTO DEL SISTEMA LEGAL" provisto abajo.
 2. Si la respuesta no está en el contexto, DEBES decir: "No encuentro información suficiente en el expediente o bases legales actuales para responder esto con certeza."
 3. NO inventes leyes, ni fallos, ni hechos del caso.
-4. CITA SIEMPRE las fuentes (ejs: "Según el Art X de la Ley Y...", "Conforme al fallo Z...").
-5. Presta especial atención al [Score] de la jurisprudencia sugerida. Prioriza citar fallos con Score alto (>70) ya que son más relevantes o autoritativos.
-
-FORMATO DE RESPUESTA:
-- Profesional, directo y jurídico.
-- Usa listas markdown para enumerar puntos.
-- Si sugieres una estrategia, justifícala con el contexto.
 
 ${contextBlock}
-        `.trim();
+    `.trim();
 
-        // 6. Ejecutar inferencia
-        let responseContent = "";
-        try {
-            if (!this.configService.get('OPENAI_API_KEY')) {
-                responseContent = "[MODO SIMULACIÓN] La API Key no está configurada. Respuesta simulada basada en el contexto recuperado.";
-            } else {
-                const llmResult = await this.chatModel.call([
-                    new SystemMessage(systemPrompt),
-                    new HumanMessage(message)
-                ]);
-                responseContent = String(llmResult.content);
-            }
-        } catch (error) {
-            this.logger.error("Error en OpenAI Chat", error);
-            responseContent = "Error temporal conectando con el cerebro de IA Legal.";
-        }
+    let responseContent = "";
+    const openAiKey = this.configService.get<string>("OPENAI_API_KEY") || "";
+    const isTestOffline =
+      !openAiKey ||
+      openAiKey.startsWith("sk-test-") ||
+      this.configService.get<string>("NODE_ENV") === "test";
+    try {
+      if (isTestOffline) {
+        responseContent =
+          "[MODO SIMULACIÓN] La API Key no está configurada. Respuesta simulada basada en el contexto recuperado.";
+      } else {
+        const llmResult = await this.chatModel.call([
+          new SystemMessage(systemPrompt),
+          new HumanMessage(message),
+        ]);
+        responseContent = String(llmResult.content);
+      }
+    } catch (error) {
+      this.logger.error("Error en OpenAI Chat", error);
+      responseContent = "Error temporal conectando con el cerebro de IA Legal.";
+    }
 
-        // 7. Persistir respuesta del asistente
-        const assistantMsg = await this.prisma.aIChatMessage.create({
-            data: {
-                sessionId: session.id,
-                role: 'assistant',
-                content: responseContent,
-                modelModel: 'gpt-4o',
-                isVerified: true
-            }
-        });
-
-        // 8. Actualizar 'last activity' de la sesión
-        await this.prisma.aIChatSession.update({
-            where: { id: session.id },
-            data: { updatedAt: new Date() }
-        });
-
-        return {
+    const assistantMsg = await this.scopedPrisma.runInOrgContext(
+      ctx,
+      async (tx) => {
+        const created = await tx.aIChatMessage.create({
+          data: {
             sessionId: session.id,
-            message: assistantMsg.content,
-            messageId: assistantMsg.id,
-            role: 'assistant',
-            createdAt: assistantMsg.createdAt
-        };
-    }
-
-    /**
-     * Recupera el historial completo de la sesión
-     */
-    async getSessionHistory(expedienteId: string, userId: string) {
-        const session = await this.prisma.aIChatSession.findFirst({
-            where: { expedienteId, userId },
-            include: {
-                messages: {
-                    orderBy: { createdAt: 'asc' }
-                }
-            }
+            organizationId: ctx.organizationId,
+            role: "assistant",
+            content: responseContent,
+            modelModel: "gpt-4o",
+            isVerified: true,
+          },
         });
 
-        if (!session) return [];
-        return session.messages;
-    }
-
-    /**
-     * Limpia la memoria del chat (inicia nueva sesión lógica)
-     */
-    async clearHistory(expedienteId: string, userId: string) {
-        const session = await this.prisma.aIChatSession.findFirst({
-            where: { expedienteId, userId }
+        await tx.aIChatSession.updateMany({
+          where: { id: session.id, organizationId: ctx.organizationId },
+          data: { updatedAt: new Date() },
         });
 
-        if (session) {
-            await this.prisma.aIChatMessage.deleteMany({
-                where: { sessionId: session.id }
-            });
-            return { success: true, message: "Historial borrado." };
-        }
-        return { success: false, message: "No había historial." };
-    }
+        return created;
+      },
+    );
+
+    return {
+      sessionId: session.id,
+      message: assistantMsg.content,
+      messageId: assistantMsg.id,
+      role: "assistant",
+      createdAt: assistantMsg.createdAt,
+    };
+  }
+
+  /**
+   * Recupera el historial completo de la sesión dentro de la organización activa.
+   */
+  async getSessionHistory(expedienteId: string, ctx: ActiveOrgContext) {
+    await this.assertExpedienteOwnership(expedienteId, ctx);
+
+    return this.scopedPrisma.runInOrgContext(ctx, async (tx) => {
+      const session = await tx.aIChatSession.findFirst({
+        where: {
+          expedienteId,
+          userId: ctx.userId,
+          organizationId: ctx.organizationId,
+        },
+        include: {
+          messages: {
+            where: { organizationId: ctx.organizationId },
+            orderBy: { createdAt: "asc" },
+          },
+        },
+      });
+
+      if (!session) return [];
+      return session.messages;
+    });
+  }
+
+  /**
+   * Limpia la memoria del chat dentro de la organización activa.
+   */
+  async clearHistory(expedienteId: string, ctx: ActiveOrgContext) {
+    await this.assertExpedienteOwnership(expedienteId, ctx);
+
+    return this.scopedPrisma.runInOrgContext(ctx, async (tx) => {
+      const session = await tx.aIChatSession.findFirst({
+        where: {
+          expedienteId,
+          userId: ctx.userId,
+          organizationId: ctx.organizationId,
+        },
+        select: { id: true },
+      });
+
+      if (session) {
+        await tx.aIChatMessage.deleteMany({
+          where: {
+            sessionId: session.id,
+            organizationId: ctx.organizationId,
+          },
+        });
+        return { success: true, message: "Historial borrado." };
+      }
+      return { success: false, message: "No había historial." };
+    });
+  }
 }

@@ -1,5 +1,4 @@
 
-import React from 'react';
 import './PencilLoader.css';
 
 export const PencilLoader = () => {
